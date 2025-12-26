@@ -2,80 +2,81 @@ const chatOutput = document.getElementById("chat-output");
 const chatInput = document.getElementById("chat-input");
 const sendBtn = document.getElementById("send-btn");
 
-// Handle sending messages
+
+
+async function getPageContent() {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    
+    // Inject a script to get the page text
+    const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+            return document.body.innerText.slice(0, 2000);
+        },
+    });
+
+    return results[0].result;
+}
+
+
 const sendMessage = async () => {
     const query = chatInput.value.trim();
     if (!query) return;
 
-    // Add user message to chat
     addMessage("user", query);
     chatInput.value = "";
-    chatInput.style.height = "auto";
-
     
-    const typingIndicator = addMessage("assistant", "<div class='typing-indicator'><span></span><span></span><span></span></div>");
+    const typingIndicator = addMessage("assistant", "Reading page and thinking...");
 
     try {
-        //  DuckDuckGo search
+
+        const pageText = await getPageContent();
+
+        //  DuckDuckGo search (Optional, keep if you want external info too)
         const ddgRes = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`);
         const ddgData = await ddgRes.json();
-        let ddgAnswer = ddgData.AbstractText || ddgData.Heading || "";
+        const ddgAnswer = ddgData.AbstractText || "";
 
-        //Pass to gemini
+        // Call Gemini
         chrome.storage.local.get("GEMINI_API_KEY", async ({ GEMINI_API_KEY }) => {
-            if (!GEMINI_API_KEY) {
-                updateMessage(typingIndicator, "assistant", "⚠️ No API key found. Please set it first.");
-                return;
-            }
+            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
-            try {
-                const geminiRes = await fetch(
-                    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-                    {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            contents: [{
-                                parts: [{
-                                    text: `
-                  You are a helpful assistant.  
-- If the query is a question, provide a clear and concise answer.  
-- If the query is a statement, explain it.  
+            const response = await fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    contents: [{
+                        parts: [{
+                            text: `
+                            You are an assistant with access to the user's current web page.
+                            
+                            CURRENT PAGE CONTENT:
+                            ${pageText}
+                            
+                            DUCKDUCKGO INFO:
+                            ${ddgAnswer}
+                            
+                            USER QUERY: 
+                            ${query}
+                            
+                            Please answer the user's query based on the page content provided above.`
+                        }]
+                    }]
+                })
+            });
 
-Query: ${query}  
-DuckDuckGo Info: ${ddgAnswer}  
-
-Guidelines:  
-- Keep responses straight to the point.  
-- Use code blocks with triple backticks and specify the language when sharing code.  
-- Do not include filler phrases (e.g., “I understand”); just give the response directly.  
-
-                  
-                  `
-                                }]
-                            }]
-                        })
-                    }
-                );
-
-                const geminiData = await geminiRes.json();
-                const answer = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "I couldn't find a good answer to that.";
-
-                // Format the response with markdown support
-                const formattedAnswer = formatMarkdown(answer);
-                updateMessage(typingIndicator, "assistant", formattedAnswer);
-
-            } catch (err) {
-                console.error("Gemini API error:", err);
-                updateMessage(typingIndicator, "assistant", "⚠️ Sorry, I encountered an error while processing your request.");
-            }
+            const data = await response.json();
+            const answer = data?.candidates?.[0]?.content?.parts?.[0]?.text || "Error reaching Gemini.";
+            updateMessage(typingIndicator, "assistant", formatMarkdown(answer));
         });
 
     } catch (err) {
-        console.error("DuckDuckGo API error:", err);
-        updateMessage(typingIndicator, "assistant", "⚠️ I had trouble fetching information. You can try asking again.");
+        console.error(err);
+        updateMessage(typingIndicator, "assistant", "⚠️ Error: " + err.message);
     }
 };
+
+
 
 
 sendBtn.addEventListener("click", sendMessage);
